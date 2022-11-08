@@ -1,5 +1,6 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![doc = include_str!("../README.md")]
+#![feature(asm_experimental_arch)]
 
 mod mutex;
 #[cfg(feature = "std")]
@@ -44,48 +45,7 @@ impl<'cs> CriticalSection<'cs> {
     }
 }
 
-#[cfg(any(
-    all(feature = "restore-state-none", feature = "restore-state-bool"),
-    all(feature = "restore-state-none", feature = "restore-state-u8"),
-    all(feature = "restore-state-none", feature = "restore-state-u16"),
-    all(feature = "restore-state-none", feature = "restore-state-u32"),
-    all(feature = "restore-state-none", feature = "restore-state-u64"),
-    all(feature = "restore-state-bool", feature = "restore-state-u8"),
-    all(feature = "restore-state-bool", feature = "restore-state-u16"),
-    all(feature = "restore-state-bool", feature = "restore-state-u32"),
-    all(feature = "restore-state-bool", feature = "restore-state-u64"),
-    all(feature = "restore-state-u8", feature = "restore-state-u16"),
-    all(feature = "restore-state-u8", feature = "restore-state-u32"),
-    all(feature = "restore-state-u8", feature = "restore-state-u64"),
-    all(feature = "restore-state-u16", feature = "restore-state-u32"),
-    all(feature = "restore-state-u16", feature = "restore-state-u64"),
-    all(feature = "restore-state-u32", feature = "restore-state-u64"),
-))]
-compile_error!("You must set at most one of these Cargo features: restore-state-none, restore-state-bool, restore-state-u8, restore-state-u16, restore-state-u32, restore-state-u64");
-
-#[cfg(not(any(
-    feature = "restore-state-bool",
-    feature = "restore-state-u8",
-    feature = "restore-state-u16",
-    feature = "restore-state-u32",
-    feature = "restore-state-u64"
-)))]
-type RawRestoreStateInner = ();
-
-#[cfg(feature = "restore-state-bool")]
-type RawRestoreStateInner = bool;
-
-#[cfg(feature = "restore-state-u8")]
-type RawRestoreStateInner = u8;
-
-#[cfg(feature = "restore-state-u16")]
 type RawRestoreStateInner = u16;
-
-#[cfg(feature = "restore-state-u32")]
-type RawRestoreStateInner = u32;
-
-#[cfg(feature = "restore-state-u64")]
-type RawRestoreStateInner = u64;
 
 // We have RawRestoreStateInner and RawRestoreState so that we don't have to copypaste the docs 5 times.
 // In the docs this shows as `pub type RawRestoreState = u8` or whatever the selected type is, because
@@ -130,28 +90,6 @@ impl RestoreState {
     /// Note that due to the safety contract of [`acquire`]/[`release`], you must not pass
     /// a `RestoreState` obtained from this method to [`release`].
     pub const fn invalid() -> Self {
-        #[cfg(not(any(
-            feature = "restore-state-bool",
-            feature = "restore-state-u8",
-            feature = "restore-state-u16",
-            feature = "restore-state-u32",
-            feature = "restore-state-u64"
-        )))]
-        return Self(());
-
-        #[cfg(feature = "restore-state-bool")]
-        return Self(false);
-
-        #[cfg(feature = "restore-state-u8")]
-        return Self(0);
-
-        #[cfg(feature = "restore-state-u16")]
-        return Self(0);
-
-        #[cfg(feature = "restore-state-u32")]
-        return Self(0);
-
-        #[cfg(feature = "restore-state-u64")]
         return Self(0);
     }
 }
@@ -175,10 +113,6 @@ impl RestoreState {
 ///   [`core::sync::atomic::Ordering::Release`] operation.
 #[inline(always)]
 pub unsafe fn acquire() -> RestoreState {
-    extern "Rust" {
-        fn _critical_section_1_0_acquire() -> RawRestoreState;
-    }
-
     #[allow(clippy::unit_arg)]
     RestoreState(_critical_section_1_0_acquire())
 }
@@ -192,10 +126,6 @@ pub unsafe fn acquire() -> RestoreState {
 /// See [`acquire`] for the safety contract description.
 #[inline(always)]
 pub unsafe fn release(restore_state: RestoreState) {
-    extern "Rust" {
-        fn _critical_section_1_0_release(restore_state: RawRestoreState);
-    }
-
     #[allow(clippy::unit_arg)]
     _critical_section_1_0_release(restore_state.0)
 }
@@ -274,16 +204,102 @@ pub unsafe trait Impl {
 ///     }
 /// }
 /// # }
-#[macro_export]
-macro_rules! set_impl {
-    ($t: ty) => {
-        #[no_mangle]
-        unsafe fn _critical_section_1_0_acquire() -> $crate::RawRestoreState {
-            <$t as $crate::Impl>::acquire()
+
+mod sr {
+    use core::arch::asm;
+
+    /// Status Register
+    #[derive(Clone, Copy, Debug)]
+    #[repr(transparent)]
+    pub struct Sr {
+        bits: u16,
+    }
+
+    impl Sr {
+        /// Returns the contents of the register as raw bits
+        pub fn bits(&self) -> u16 {
+            self.bits
         }
-        #[no_mangle]
-        unsafe fn _critical_section_1_0_release(restore_state: $crate::RawRestoreState) {
-            <$t as $crate::Impl>::release(restore_state)
+
+        /// General interrupt enable flag
+        /// When this bit is set, it enables maskable interrupts.
+        /// When it is reset, all maskable interrupts are disabled.
+        pub fn gie(&self) -> bool {
+            self.bits & (1 << 3) != 0
         }
-    };
+    }
+
+    /// Reads the CPU register
+    #[inline(always)]
+    pub fn read() -> Sr {
+        let r: u16;
+        unsafe {
+            asm!("mov R2, {0}", out(reg) r, options(nomem, nostack, preserves_flags));
+        }
+        Sr { bits: r }
+    }
+}
+
+mod interrupt {
+    use core::arch::asm;
+
+    #[inline(always)]
+    pub fn disable() {
+        match () {
+            #[cfg(target_arch = "msp430")]
+            () => unsafe {
+                // Do not use `nomem` and `readonly` because prevent subsequent memory accesses from being reordered before interrupts are disabled.
+                // Do not use `preserves_flags` because DINT modifies the GIE (global interrupt enable) bit of the status register.
+                asm!("dint {{ nop", options(nostack));
+            },
+            #[cfg(not(target_arch = "msp430"))]
+            () => {}
+        }
+    }
+
+    /// Enables all the interrupts
+    ///
+    /// # Safety
+    ///
+    /// - In any function `f()` that calls `enable`, `CriticalSection` or `&CriticalSection` tokens cannot be used in `f()`'s body after the
+    ///   call to `enable`. If `f()` owns `CriticalSection` tokens, it is recommended to [`drop`](https://doc.rust-lang.org/nightly/core/mem/fn.drop.html)
+    ///   these tokens before calling `enable`.
+    #[inline(always)]
+    pub unsafe fn enable() {
+        match () {
+            #[cfg(target_arch = "msp430")]
+            () => {
+                // Do not use `nomem` and `readonly` because prevent preceding memory accesses from being reordered after interrupts are enabled.
+                // Do not use `preserves_flags` because EINT modifies the GIE (global interrupt enable) bit of the status register.
+                asm!("nop {{ eint {{ nop", options(nostack));
+            }
+            #[cfg(not(target_arch = "msp430"))]
+            () => {}
+        }
+    }
+}
+
+#[inline]
+unsafe fn _critical_section_1_0_acquire() -> RawRestoreState {
+    let sr = sr::read().bits();
+    interrupt::disable();
+    // Safety: Sr is repr(transparent), RawRestoreState is u16, and Sr
+    // contains only a single u16. This should be fine.
+    core::mem::transmute(sr)
+}
+
+#[inline]
+unsafe fn _critical_section_1_0_release(sr: RawRestoreState) {
+    // Safety: Must be called w/ acquire, otherwise we could receive
+    // an invalid Sr (even though internally it's a u16, not all bits
+    // are actually used). It would be better to pass Sr as
+    // RawRestoreState, but since we can't, this will be acceptable,
+    // See acquire() for why this is safe.
+    let sr: sr::Sr = core::mem::transmute(sr);
+
+    // If the interrupts were active before our `disable` call, then re-enable
+    // them. Otherwise, keep them disabled.
+    if sr.gie() {
+        interrupt::enable();
+    }
 }
