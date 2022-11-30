@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- (Add unreleased changes here)
+- Fork crate and rewrite public API to make msp430-specific. This avoids the
+  use of an `extern` API and works around Rust issue [#102295](https://github.com/rust-lang/rust/issues/102295).
+  The critical-section in this fork is a reimplementation of the one provided by
+  the [msp430](https://github.com/rust-embedded/msp430/blob/master/src/critical_section.rs)
+  crate.
 
 ## [v1.1.1] - 2022-09-13
 
@@ -72,7 +76,7 @@ Breaking changes:
 
 - First release
 
-[Unreleased]: https://github.com/rust-embedded/critical-section/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/rust-embedded/critical-section/compare/v1.1.1...cr1901:msp430-cs:msp430-cs
 [v1.1.1]: https://github.com/rust-embedded/critical-section/compare/v1.1.0...v1.1.1
 [v1.1.0]: https://github.com/rust-embedded/critical-section/compare/v1.0.0...v1.1.0
 [v1.0.0]: https://github.com/rust-embedded/critical-section/compare/v1.0.0-alpha.2...v1.0.0

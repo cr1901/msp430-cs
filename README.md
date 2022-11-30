@@ -1,3 +1,27 @@
+# `msp430-cs`
+
+This crate is a `critical-section` implementation without relying on `extern`
+functions. Removing `extern` functions from `critical-section` is a workaround
+to Rust size misoptimizations described in Rust issue [#102295].
+
+Unless you're _very_ space-constrained, you probably don't want to use this
+crate. This crate will not be published to [crates.io](https://crates.io/), and
+will only be useful until [#102295] is fixed.
+
+The intended use in `Cargo.toml` is:
+
+```toml
+[dependencies.critical-section]
+git = "https://github.com/cr1901/msp430-cs"
+version = "1.1.0"
+branch = "msp430-cs"
+
+[patch.crates-io]
+critical-section = { git = "https://github.com/cr1901/msp430-cs", version = "1.1.0", branch = "msp430-cs" }
+```
+
+[#102295]: https://github.com/rust-lang/rust/issues/102295
+
 # critical-section
 [![crates.io](https://img.shields.io/crates/d/critical-section.svg)](https://crates.io/crates/critical-section)
 [![crates.io](https://img.shields.io/crates/v/critical-section.svg)](https://crates.io/crates/critical-section)
